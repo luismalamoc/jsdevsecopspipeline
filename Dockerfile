@@ -10,14 +10,12 @@ RUN npm run build
 FROM node:20-alpine
 WORKDIR /app
 
-# Config user
-RUN addgroup -S node && adduser -S node -G node
-
 # Copy dependencies and built app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package*.json ./
 
+# Config user (node user and group already exist in node:alpine image)
 # Change ownership
 RUN chown -R node:node /app
 
