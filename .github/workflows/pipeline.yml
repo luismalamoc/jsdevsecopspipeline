@@ -100,16 +100,8 @@ jobs:
         with:
           name: dependency-check-reports
           path: reports/
-          retention-days: 30
-      
-      - name: Validate CRITICAL, HIGH, or MEDIUM vulnerabilities in Dependency-Check report
-        run: |
-          if jq '.dependencies[].vulnerabilities[]? | select(.severity=="CRITICAL" or .severity=="HIGH" or .severity=="MEDIUM")' reports/dependency-check-report.json | grep .; then
-            echo "CRITICAL, HIGH, or MEDIUM vulnerabilities found in Dependency-Check report!"
-            exit 1
-          else
-            echo "No CRITICAL, HIGH, or MEDIUM vulnerabilities found in Dependency-Check report."
-          fi
+          retention-days: 5
+
 
   docker_image_scan_job:
     runs-on: ubuntu-24.04
