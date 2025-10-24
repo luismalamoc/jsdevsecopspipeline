@@ -1,0 +1,131 @@
+name: Pipeline
+
+on: [push]
+
+jobs:
+  build_job:
+    name: Build Job
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build with NestJS
+        run: npm run build
+      - name: Run tests
+        run: npm test
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+           dist/
+           node_modules/
+          retention-days: 1
+
+  sast_scan_job:
+    name: SAST Scan Job
+    runs-on: ubuntu-24.04
+    needs: [build_job]
+    if: success()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install Semgrep
+        run: pip install semgrep
+      - name: Run Semgrep scan with auto-config and error on findings
+        run: semgrep scan --config=auto --severity=ERROR --severity=WARNING --error --verbose
+
+  sca_scan_job:
+    runs-on: ubuntu-24.04
+    name: SCA Scan Job
+    needs: [build_job]
+    if: success()
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Get Latest Dependency-Check Version and Download
+        run: |
+          LATEST_VERSION=$(curl -s https://api.github.com/repos/dependency-check/DependencyCheck/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          echo "Latest version: ${LATEST_VERSION}"
+          wget "https://github.com/dependency-check/DependencyCheck/releases/download/v${LATEST_VERSION}/dependency-check-${LATEST_VERSION}-release.zip"
+          unzip -q dependency-check-${LATEST_VERSION}-release.zip
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Run OWASP Dependency-Check
+        run: |
+          ./dependency-check/bin/dependency-check.sh \
+            --project "nestjs-app" \
+            --scan . \
+            --format ALL \
+            --out reports \
+            --failOnCVSS 4 \
+            --enableRetired \
+            --suppression suppression.xml
+        continue-on-error: false
+
+      - name: Upload Dependency-Check Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-reports
+          path: reports/
+          retention-days: 30
+
+      - name: Display Critical Findings
+        if: failure()
+        run: |
+          echo "❌ CRITICAL VULNERABILITIES FOUND!"
+          echo "=== OWASP Dependency-Check Results ==="
+          if [ -f reports/dependency-check-report.json ]; then
+            cat reports/dependency-check-report.json | jq '.dependencies[] | select(.vulnerabilities != null) | {fileName: .fileName, vulnerabilities: .vulnerabilities}'
+          fi
+
+  docker_image_scan_job:
+    runs-on: ubuntu-24.04
+    needs: [build_job]
+    if: success()
+    name: Docker Image Scan Job
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Build an image from Dockerfile
+        run: docker build -t ${{ github.repository }}:${{ github.sha }} .
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ github.repository }}:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH,MEDIUM'
