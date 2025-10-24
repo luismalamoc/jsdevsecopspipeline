@@ -51,48 +51,49 @@ jobs:
     name: SCA Scan Job
     needs: [build_job]
     if: success()
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      
+      - name: Cache Dependency-Check Data
+        uses: actions/cache@v4
         with:
-          name: build-artifacts
-
-      - name: Get Latest Dependency-Check Version and Download
-        run: |
-          LATEST_VERSION=$(curl -s https://api.github.com/repos/dependency-check/DependencyCheck/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-          echo "Latest version: ${LATEST_VERSION}"
-          wget "https://github.com/dependency-check/DependencyCheck/releases/download/v${LATEST_VERSION}/dependency-check-${LATEST_VERSION}-release.zip"
-          unzip -q dependency-check-${LATEST_VERSION}-release.zip
-
-      - name: Create reports directory
-        run: mkdir -p reports
-
+          path: |
+            ~/.cache/dependency-check-data
+          key: dependency-check-data-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            dependency-check-data-
+      
       - name: Run OWASP Dependency-Check
-        run: |
-          ./dependency-check/bin/dependency-check.sh \
-            --project "nestjs-app" \
-            --scan . \
-            --format ALL \
-            --out reports \
-            --failOnCVSS 4 \
-            --enableRetired \
-            --suppression suppression.xml
-        continue-on-error: false
-
+        uses: dependency-check/Dependency-Check_Action@main
+        id: Depcheck
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        with:
+          project: 'nestjs-app'
+          path: '.'
+          format: 'ALL'
+          out: 'reports'
+          args: >-
+            --failOnCVSS 4
+            --enableRetired
+            --enableExperimental
+            --nvdApiKey ${{ secrets.NVD_API_KEY }}
+      
       - name: Upload Dependency-Check Reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -100,14 +101,14 @@ jobs:
           name: dependency-check-reports
           path: reports/
           retention-days: 30
-
-      - name: Display Critical Findings
-        if: failure()
+      
+      - name: Validate CRITICAL, HIGH, or MEDIUM vulnerabilities in Dependency-Check report
         run: |
-          echo "❌ CRITICAL VULNERABILITIES FOUND!"
-          echo "=== OWASP Dependency-Check Results ==="
-          if [ -f reports/dependency-check-report.json ]; then
-            cat reports/dependency-check-report.json | jq '.dependencies[] | select(.vulnerabilities != null) | {fileName: .fileName, vulnerabilities: .vulnerabilities}'
+          if jq '.dependencies[].vulnerabilities[]? | select(.severity=="CRITICAL" or .severity=="HIGH" or .severity=="MEDIUM")' reports/dependency-check-report.json | grep .; then
+            echo "CRITICAL, HIGH, or MEDIUM vulnerabilities found in Dependency-Check report!"
+            exit 1
+          else
+            echo "No CRITICAL, HIGH, or MEDIUM vulnerabilities found in Dependency-Check report."
           fi
 
   docker_image_scan_job:
